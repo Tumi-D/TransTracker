@@ -1,12 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View, Alert, SafeAreaView } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
+import { NavigationContainer } from '@react-navigation/native';
+import { LinearGradient as ExpoLinearGradient } from 'expo-linear-gradient';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
+
 import { databaseService } from './src/database/schema';
 import { smsListenerService } from './src/services/smsListener';
-import { BudgetOverview } from './src/components/BudgetOverview';
-import { TransactionList } from './src/components/TransactionList';
-import { AddTransactionModal } from './src/components/AddTransactionModal';
 import { AppProvider } from './src/context/AppContext';
+import { AppNavigator } from './src/components/AppNavigator';
 
 export default function App() {
   const [isInitialized, setIsInitialized] = useState(false);
@@ -18,10 +20,8 @@ export default function App() {
 
   const initializeApp = async () => {
     try {
-      // Initialize database
       await databaseService.init();
       
-      // Start SMS listening
       const smsStarted = await smsListenerService.startListening();
       if (!smsStarted) {
         console.warn('SMS listening could not be started');
@@ -36,91 +36,106 @@ export default function App() {
 
   if (initError) {
     return (
-      <SafeAreaView style={styles.container}>
-        <View style={styles.errorContainer}>
-          <Text style={styles.errorTitle}>Initialization Error</Text>
-          <Text style={styles.errorText}>{initError}</Text>
-        </View>
-        <StatusBar style="auto" />
-      </SafeAreaView>
+      <SafeAreaProvider>
+        <SafeAreaView style={styles.safeContainer}>
+          <View style={styles.centerContainer}>
+            <ExpoLinearGradient
+              colors={['#EF4444', '#DC2626']}
+              style={styles.errorGradient}
+            >
+              <Text style={styles.errorTitle}>Initialization Error</Text>
+              <Text style={styles.errorText}>{initError}</Text>
+            </ExpoLinearGradient>
+          </View>
+          <StatusBar style="light" />
+        </SafeAreaView>
+      </SafeAreaProvider>
     );
   }
 
   if (!isInitialized) {
     return (
-      <SafeAreaView style={styles.container}>
-        <View style={styles.loadingContainer}>
-          <Text style={styles.loadingText}>Setting up Budget Tracker...</Text>
-          <Text style={styles.loadingSubtext}>Initializing database and services</Text>
-        </View>
-        <StatusBar style="auto" />
-      </SafeAreaView>
+      <SafeAreaProvider>
+        <SafeAreaView style={styles.safeContainer}>
+          <View style={styles.centerContainer}>
+            <ExpoLinearGradient
+              colors={['#8B5CF6', '#A855F7']}
+              style={styles.loadingGradient}
+            >
+              <Text style={styles.loadingTitle}>Budget Tracker</Text>
+              <Text style={styles.loadingText}>Setting up your financial dashboard...</Text>
+              <View style={styles.loadingDot} />
+            </ExpoLinearGradient>
+          </View>
+          <StatusBar style="light" />
+        </SafeAreaView>
+      </SafeAreaProvider>
     );
   }
 
   return (
-    <AppProvider>
-      <SafeAreaView style={styles.container}>
-        <View style={styles.content}>
-          <Text style={styles.title}>💰 Budget Tracker</Text>
-          <BudgetOverview />
-          <TransactionList />
-          <AddTransactionModal />
-        </View>
-        <StatusBar style="auto" />
-      </SafeAreaView>
-    </AppProvider>
+    <SafeAreaProvider>
+      <AppProvider>
+        <AppNavigator />
+        <StatusBar style="light" />
+      </AppProvider>
+    </SafeAreaProvider>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  safeContainer: {
     flex: 1,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: '#F8FAFC',
   },
-  content: {
+  centerContainer: {
     flex: 1,
-    padding: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#F8FAFC',
   },
-  title: {
+  loadingGradient: {
+    paddingHorizontal: 40,
+    paddingVertical: 60,
+    borderRadius: 24,
+    alignItems: 'center',
+    margin: 20,
+  },
+  loadingTitle: {
     fontSize: 24,
     fontWeight: 'bold',
-    textAlign: 'center',
-    marginBottom: 20,
-    color: '#2c3e50',
-  },
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
+    color: '#FFFFFF',
+    marginBottom: 12,
   },
   loadingText: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#34495e',
-    marginBottom: 8,
-  },
-  loadingSubtext: {
-    fontSize: 14,
-    color: '#7f8c8d',
+    fontSize: 16,
+    color: 'rgba(255,255,255,0.8)',
     textAlign: 'center',
+    marginBottom: 20,
   },
-  errorContainer: {
-    flex: 1,
-    justifyContent: 'center',
+  loadingDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#FFFFFF',
+    opacity: 0.6,
+  },
+  errorGradient: {
+    paddingHorizontal: 40,
+    paddingVertical: 60,
+    borderRadius: 24,
     alignItems: 'center',
-    padding: 20,
+    margin: 20,
   },
   errorTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#e74c3c',
-    marginBottom: 8,
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
+    marginBottom: 12,
   },
   errorText: {
     fontSize: 14,
-    color: '#95a5a6',
+    color: 'rgba(255,255,255,0.8)',
     textAlign: 'center',
   },
 });

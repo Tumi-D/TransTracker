@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useReducer, useEffect } from 'react';
-import { Transaction, Budget, Category } from '../database/schema';
+import { Transaction, Budget, Category, Currency, UserPreferences } from '../database/schema';
 import { budgetService, BudgetSummary, CategorySpending } from '../services/budgetService';
+import { currencyService } from '../services/currencyService';
 
 export interface AppState {
   transactions: Transaction[];
@@ -8,6 +9,9 @@ export interface AppState {
   categories: Category[];
   budgetSummary: BudgetSummary | null;
   categorySpending: CategorySpending[];
+  currencies: Currency[];
+  userPreferences: UserPreferences | null;
+  multiCurrencyBalances: {[currency: string]: number};
   isLoading: boolean;
   error: string | null;
 }
@@ -25,7 +29,10 @@ export type AppAction =
   | { type: 'DELETE_BUDGET'; payload: string }
   | { type: 'SET_CATEGORIES'; payload: Category[] }
   | { type: 'SET_BUDGET_SUMMARY'; payload: BudgetSummary }
-  | { type: 'SET_CATEGORY_SPENDING'; payload: CategorySpending[] };
+  | { type: 'SET_CATEGORY_SPENDING'; payload: CategorySpending[] }
+  | { type: 'SET_CURRENCIES'; payload: Currency[] }
+  | { type: 'SET_USER_PREFERENCES'; payload: UserPreferences }
+  | { type: 'SET_MULTI_CURRENCY_BALANCES'; payload: {[currency: string]: number} };
 
 const initialState: AppState = {
   transactions: [],
@@ -33,6 +40,9 @@ const initialState: AppState = {
   categories: [],
   budgetSummary: null,
   categorySpending: [],
+  currencies: [],
+  userPreferences: null,
+  multiCurrencyBalances: {},
   isLoading: false,
   error: null,
 };
@@ -94,6 +104,15 @@ function appReducer(state: AppState, action: AppAction): AppState {
     case 'SET_CATEGORY_SPENDING':
       return { ...state, categorySpending: action.payload };
     
+    case 'SET_CURRENCIES':
+      return { ...state, currencies: action.payload };
+    
+    case 'SET_USER_PREFERENCES':
+      return { ...state, userPreferences: action.payload };
+    
+    case 'SET_MULTI_CURRENCY_BALANCES':
+      return { ...state, multiCurrencyBalances: action.payload };
+    
     default:
       return state;
   }
@@ -103,23 +122,98 @@ const AppContext = createContext<{
   state: AppState;
   dispatch: React.Dispatch<AppAction>;
   refreshData: () => Promise<void>;
+  totalBalance: number;
+  totalIncome: number;
+  totalExpenses: number;
+  getFormattedAmount: (amount: number, currency?: string, fromCurrency?: string) => Promise<string>;
+  convertAmount: (amount: number, fromCurrency: string, toCurrency?: string) => Promise<number>;
+  getConsolidatedBalance: () => Promise<number>;
+  getConvertedTotals: () => Promise<{income: number, expenses: number, balance: number}>;
 } | undefined>(undefined);
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [state, dispatch] = useReducer(appReducer, initialState);
 
+  // Calculate totals from transactions (raw amounts - may be multi-currency)
+  const totalIncome = state.transactions
+    .filter(t => t.type === 'income')
+    .reduce((sum, t) => sum + t.amount, 0);
+    
+  const totalExpenses = state.transactions
+    .filter(t => t.type === 'expense')
+    .reduce((sum, t) => sum + t.amount, 0);
+    
+  const totalBalance = totalIncome - totalExpenses;
+
+  // Get converted totals in display currency
+  const getConvertedTotals = async () => {
+    const displayCurrency = state.userPreferences?.displayCurrency || 'GHS';
+    let convertedIncome = 0;
+    let convertedExpenses = 0;
+
+    // Convert each transaction to display currency
+    for (const transaction of state.transactions) {
+      const convertedAmount = await currencyService.convertAmount(
+        transaction.amount, 
+        transaction.currency || 'GHS', 
+        displayCurrency
+      );
+
+      if (transaction.type === 'income') {
+        convertedIncome += convertedAmount;
+      } else {
+        convertedExpenses += convertedAmount;
+      }
+    }
+
+    return {
+      income: convertedIncome,
+      expenses: convertedExpenses,
+      balance: convertedIncome - convertedExpenses
+    };
+  };
+
   const refreshData = async () => {
     try {
       dispatch({ type: 'SET_LOADING', payload: true });
       
-      // Load budget summary and category spending in parallel
-      const [summary, categorySpending] = await Promise.all([
+      // Load transactions first
+      const { databaseService } = await import('../database/schema');
+      const db = await databaseService.getDatabase();
+      if (db) {
+        const transactions = await db.getAllAsync('SELECT * FROM transactions ORDER BY date DESC');
+        dispatch({ type: 'SET_TRANSACTIONS', payload: transactions as Transaction[] });
+      }
+      
+      // Load budget summary, category spending, currencies, preferences, and balances in parallel
+      const [summary, categorySpending, currencies, multiCurrencyBalances] = await Promise.all([
         budgetService.getBudgetSummary(),
         budgetService.getCategorySpending(),
+        currencyService.getAvailableCurrencies(),
+        currencyService.getMultiCurrencyBalance(),
       ]);
 
       dispatch({ type: 'SET_BUDGET_SUMMARY', payload: summary });
       dispatch({ type: 'SET_CATEGORY_SPENDING', payload: categorySpending });
+      dispatch({ type: 'SET_CURRENCIES', payload: currencies });
+      dispatch({ type: 'SET_MULTI_CURRENCY_BALANCES', payload: multiCurrencyBalances });
+      
+      // Load user preferences (this might create default if none exist)
+      if (db) {
+        const prefs = await db.getFirstAsync('SELECT * FROM user_preferences LIMIT 1');
+        if (prefs) {
+          dispatch({ type: 'SET_USER_PREFERENCES', payload: {
+            id: (prefs as any).id,
+            baseCurrency: (prefs as any).baseCurrency,
+            displayCurrency: (prefs as any).displayCurrency,
+            autoConvert: (prefs as any).autoConvert === 1,
+            updateRatesFrequency: (prefs as any).updateRatesFrequency,
+            showMultipleCurrencies: (prefs as any).showMultipleCurrencies === 1,
+            createdAt: (prefs as any).createdAt,
+            updatedAt: (prefs as any).updatedAt
+          }});
+        }
+      }
       
     } catch (error) {
       dispatch({ type: 'SET_ERROR', payload: error instanceof Error ? error.message : 'Unknown error' });
@@ -128,12 +222,44 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
+  // Helper functions for currency operations
+  const getFormattedAmount = async (amount: number, currency?: string, fromCurrency?: string): Promise<string> => {
+    const displayCurrency = currency || state.userPreferences?.displayCurrency || 'GHS';
+    const sourceCurrency = fromCurrency || state.userPreferences?.baseCurrency || 'GHS';
+    
+    // Convert amount to display currency if needed
+    const convertedAmount = await currencyService.convertAmount(amount, sourceCurrency, displayCurrency);
+    
+    return await currencyService.formatCurrency(convertedAmount, displayCurrency);
+  };
+
+  const convertAmount = async (amount: number, fromCurrency: string, toCurrency?: string): Promise<number> => {
+    const targetCurrency = toCurrency || state.userPreferences?.displayCurrency || 'GHS';
+    return await currencyService.convertAmount(amount, fromCurrency, targetCurrency);
+  };
+
+  const getConsolidatedBalance = async (): Promise<number> => {
+    const displayCurrency = state.userPreferences?.displayCurrency || 'GHS';
+    return await currencyService.getConsolidatedBalance(displayCurrency);
+  };
+
   useEffect(() => {
     refreshData();
   }, []);
 
   return (
-    <AppContext.Provider value={{ state, dispatch, refreshData }}>
+    <AppContext.Provider value={{ 
+      state, 
+      dispatch, 
+      refreshData, 
+      totalBalance, 
+      totalIncome, 
+      totalExpenses,
+      getFormattedAmount,
+      convertAmount,
+      getConsolidatedBalance,
+      getConvertedTotals
+    }}>
       {children}
     </AppContext.Provider>
   );

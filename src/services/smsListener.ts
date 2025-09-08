@@ -355,7 +355,7 @@ export class SMSListenerService {
     }
   }
 
-  // Method to process SMS history (1 month back)
+  // Method to process SMS history (3 months back)
   async processSMSHistory(): Promise<{ processed: number; errors: number }> {
     try {
       // Check SMS permission first
@@ -373,13 +373,13 @@ export class SMSListenerService {
         }
       }
 
-      // Get SMS from last 30 days
-      const thirtyDaysAgo = new Date();
-      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      // Get SMS from last 3 months (90 days)
+      const threeMonthsAgo = new Date();
+      threeMonthsAgo.setDate(threeMonthsAgo.getDate() - 90);
       const now = new Date();
 
-      console.log('Fetching SMS history from:', thirtyDaysAgo.toISOString());
-      const smsHistory = await nativeSMSReader.getSMSHistory(thirtyDaysAgo, now);
+      console.log('Fetching SMS history from:', threeMonthsAgo.toISOString());
+      const smsHistory = await nativeSMSReader.getSMSHistory(threeMonthsAgo, now);
       
       let processed = 0;
       let errors = 0;

@@ -110,6 +110,14 @@ export class DatabaseService {
       await this.insertDefaultCategories();
       console.log('Default categories inserted');
       
+      // Insert default currencies
+      await this.insertDefaultCurrencies();
+      console.log('Default currencies inserted');
+      
+      // Initialize user preferences
+      await this.initializeUserPreferences();
+      console.log('User preferences initialized');
+      
       // Run cleanup after initialization to fix any existing duplicates
       await this.cleanupDuplicateCategories();
       console.log('Database cleanup completed');
@@ -142,10 +150,26 @@ export class DatabaseService {
           account TEXT,
           merchant TEXT,
           isRecurring INTEGER DEFAULT 0,
+          currency TEXT DEFAULT 'GHS',
+          exchangeRate REAL DEFAULT 1.0,
+          originalAmount REAL,
+          originalCurrency TEXT,
           createdAt TEXT NOT NULL,
           updatedAt TEXT NOT NULL
         )
       `);
+
+      // Add currency columns to existing transactions table if they don't exist
+      try {
+        await this.db.execAsync('ALTER TABLE transactions ADD COLUMN currency TEXT DEFAULT "GHS"');
+        await this.db.execAsync('ALTER TABLE transactions ADD COLUMN exchangeRate REAL DEFAULT 1.0');
+        await this.db.execAsync('ALTER TABLE transactions ADD COLUMN originalAmount REAL');
+        await this.db.execAsync('ALTER TABLE transactions ADD COLUMN originalCurrency TEXT');
+        console.log('Added currency columns to existing transactions table');
+      } catch (error) {
+        // Columns might already exist, that's okay
+        console.log('Currency columns already exist in transactions table:', (error as Error).message);
+      }
 
       console.log('Creating budgets table...');
       await this.db.execAsync(`
@@ -217,6 +241,35 @@ export class DatabaseService {
           transactionId TEXT,
           isProcessed INTEGER DEFAULT 1,
           createdAt TEXT NOT NULL
+        )
+      `);
+
+      console.log('Creating currencies table...');
+      await this.db.execAsync(`
+        CREATE TABLE IF NOT EXISTS currencies (
+          id TEXT PRIMARY KEY,
+          code TEXT UNIQUE NOT NULL,
+          name TEXT NOT NULL,
+          symbol TEXT NOT NULL,
+          decimalPlaces INTEGER DEFAULT 2,
+          isActive INTEGER DEFAULT 1,
+          exchangeRate REAL DEFAULT 1.0,
+          lastUpdated TEXT NOT NULL
+        )
+      `);
+
+      console.log('Creating user_preferences table...');
+      await this.db.execAsync(`
+        CREATE TABLE IF NOT EXISTS user_preferences (
+          id TEXT PRIMARY KEY,
+          userId TEXT,
+          baseCurrency TEXT NOT NULL DEFAULT 'GHS',
+          displayCurrency TEXT NOT NULL DEFAULT 'GHS',
+          autoConvert INTEGER DEFAULT 1,
+          updateRatesFrequency TEXT DEFAULT 'daily' CHECK (updateRatesFrequency IN ('hourly', 'daily', 'weekly', 'manual')),
+          showMultipleCurrencies INTEGER DEFAULT 0,
+          createdAt TEXT NOT NULL,
+          updatedAt TEXT NOT NULL
         )
       `);
 
@@ -318,6 +371,70 @@ export class DatabaseService {
     // Verify insertion
     const finalCount = await this.db.getAllAsync('SELECT COUNT(*) as count FROM categories');
     console.log(`Total categories after insertion: ${(finalCount[0] as any).count}`);
+  }
+
+  private async insertDefaultCurrencies(): Promise<void> {
+    if (!this.db) return;
+    
+    // Check if currencies already exist
+    const existingCurrencies = await this.db.getAllAsync('SELECT COUNT(*) as count FROM currencies');
+    const currencyCount = (existingCurrencies[0] as any).count;
+    
+    if (currencyCount > 0) {
+      console.log(`Currencies already exist (${currencyCount}), skipping default insertion`);
+      return;
+    }
+    
+    const defaultCurrencies = [
+      { code: 'GHS', name: 'Ghanaian Cedi', symbol: '₵', decimalPlaces: 2, isActive: true, exchangeRate: 1.0 },
+      { code: 'USD', name: 'US Dollar', symbol: '$', decimalPlaces: 2, isActive: true, exchangeRate: 0.08 },
+      { code: 'EUR', name: 'Euro', symbol: '€', decimalPlaces: 2, isActive: true, exchangeRate: 0.073 },
+      { code: 'GBP', name: 'British Pound', symbol: '£', decimalPlaces: 2, isActive: true, exchangeRate: 0.063 },
+    ];
+    
+    console.log('Inserting default currencies...');
+    for (const currency of defaultCurrencies) {
+      const id = `cur_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+      try {
+        await this.db.runAsync(
+          `INSERT INTO currencies (id, code, name, symbol, decimalPlaces, isActive, exchangeRate, lastUpdated) 
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          [id, currency.code, currency.name, currency.symbol, currency.decimalPlaces, currency.isActive ? 1 : 0, currency.exchangeRate, new Date().toISOString()]
+        );
+        console.log(`Inserted currency: ${currency.code} - ${currency.name}`);
+        await new Promise(resolve => setTimeout(resolve, 1));
+      } catch (error) {
+        console.error(`Failed to insert currency ${currency.code}:`, error);
+      }
+    }
+    console.log('Default currencies insertion complete');
+  }
+
+  private async initializeUserPreferences(): Promise<void> {
+    if (!this.db) return;
+    
+    // Check if user preferences already exist
+    const existingPrefs = await this.db.getAllAsync('SELECT COUNT(*) as count FROM user_preferences');
+    const prefsCount = (existingPrefs[0] as any).count;
+    
+    if (prefsCount > 0) {
+      console.log('User preferences already exist, skipping initialization');
+      return;
+    }
+    
+    const id = `pref_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+    const now = new Date().toISOString();
+    
+    try {
+      await this.db.runAsync(
+        `INSERT INTO user_preferences (id, baseCurrency, displayCurrency, autoConvert, updateRatesFrequency, showMultipleCurrencies, createdAt, updatedAt) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [id, 'GHS', 'GHS', 1, 'daily', 0, now, now]
+      );
+      console.log('User preferences initialized with GHS as base currency');
+    } catch (error) {
+      console.error('Failed to initialize user preferences:', error);
+    }
   }
 
   async getDatabase(): Promise<SQLite.SQLiteDatabase | null> {
